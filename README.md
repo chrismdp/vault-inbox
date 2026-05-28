@@ -119,6 +119,48 @@ The hook is not part of this repo — it's whatever you want to do after an audi
 
 If `$HOME/vault/scripts/transcribe-voice-inbox.sh` doesn't exist, the endpoint just saves the file and returns.
 
+## Web clipping (`/clip`)
+
+The same endpoint also takes web clips — grab an article and get it into the
+vault as clean markdown. Deliberately separate from `/voice`: it does **not**
+fire the transcribe hook or create a project, so clips don't bloat the inbox.
+
+```
+bookmarklet / share → POST /clip (Authorization: Bearer <token>)
+  → readability extracts the article + markdownify → markdown
+  → writes ~/vault/clippings/<slug>-<urlhash>.md  (validates as a `clipping`)
+```
+
+Conversion is **server-side** on purpose: a bookmarklet can't load a converter
+in-page under a strict Content-Security-Policy, so it just sends the rendered
+HTML (or a text selection, or a bare URL) and the server does the extraction.
+
+`POST /clip` takes JSON (all optional except `url`):
+
+| field | meaning |
+|---|---|
+| `url` | **required** — the article URL |
+| `html` | rendered page HTML — server runs readability over it |
+| `selection` | clip just this (html or text); tags the note `clip_kind: selection` |
+| `title`, `author`, `site`, `published`, `excerpt` | metadata overrides |
+| `tags` | array of strings |
+
+If only `url` is sent, the server fetches and extracts it. Re-clipping the same
+URL overwrites the same file. Returns `{ok, path, title, updated, bytes}`.
+
+```bash
+curl -X POST https://your.host/clip -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"url":"https://example.com/article"}'
+```
+
+### Bookmarklet setup
+
+Visit `https://your.host/clip/setup`, paste your token, and it builds a
+bookmarklet with your endpoint + token baked in (the token stays in your
+browser). On iOS: bookmark that page, then edit the bookmark's URL and paste the
+generated `javascript:` link. Tapping it on any article clips it (or your current
+text selection). `clip-bookmarklet.src.js` is the readable source.
+
 ## License
 
 MIT.

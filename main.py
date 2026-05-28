@@ -8,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+
+import clip as clip_lib
 
 VAULT_AUDIO = Path.home() / "vault" / "audio" / "recordings"
 VAULT_AUDIO.mkdir(parents=True, exist_ok=True)
@@ -37,6 +39,18 @@ ALLOWED_EXTS = set(CONTENT_TYPE_EXT.values())
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 app = FastAPI()
+
+# The clip bookmarklet POSTs cross-origin from arbitrary pages, so answer the
+# CORS preflight. Safe to allow any origin: every route is bearer-gated and we
+# use no cookies, so a hostile origin still can't act without the token.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["POST", "OPTIONS"],
+    allow_headers=["authorization", "content-type"],
+)
 
 
 def check_auth(authorization: str | None) -> None:
@@ -76,6 +90,33 @@ def timestamped_path(ext: str, label: str) -> Path:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/clip/setup", response_class=HTMLResponse)
+def clip_setup():
+    """Builds the bookmarklet from a token you paste (token stays in-browser)."""
+    return clip_lib.install_page()
+
+
+@app.post("/clip")
+async def clip(request: Request, authorization: str | None = Header(default=None)):
+    """Accept a web clip (JSON) and write it to vault/clippings/ as markdown.
+
+    Deliberately separate from /voice: no transcribe hook, no project creation —
+    clips don't go through the voice pipeline, so they don't bloat the inbox.
+    """
+    check_auth(authorization)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="expected a JSON body")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    try:
+        result = clip_lib.save_clip(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return JSONResponse({"ok": True, **result})
 
 
 @app.post("/voice")
