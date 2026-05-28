@@ -167,10 +167,12 @@ DOM (which is never CSP-blocked) and ships it.
 | `title`, `author`, `published`, `tags` | metadata overrides |
 | `token` | the shared secret, for the form path (or use the bearer header) |
 
-If only `url` is sent the server *will* fetch it — but that path can't see
-paywalled/authenticated content, which is the whole reason the bookmarklet
-sends the rendered DOM instead. Re-clipping the same URL overwrites its file; a
-different page with the same title-slug gets the next free `-N` suffix.
+The server **never fetches the URL itself** — by design, and to avoid an SSRF
+surface. You must send the page content (`html` or `selection`); a request with
+only a `url` is rejected (422). This is deliberate: the browser sees paywalled /
+authenticated / JS-rendered pages that a server fetch never could. Re-clipping
+the same URL overwrites its file; a different page with the same title-slug gets
+the next free `-N` suffix.
 
 ```bash
 # JSON path (extension / scripting)

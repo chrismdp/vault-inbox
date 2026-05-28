@@ -52,6 +52,15 @@ def test_requires_valid_url(client):
     assert c.post("/clip", json={"title": "no url"}, headers=_auth()).status_code == 422
 
 
+def test_url_without_content_rejected(client):
+    """The server never fetches — a url with no html/selection is a 422, not an
+    SSRF-prone server-side fetch."""
+    c, home, _ = client
+    r = c.post("/clip", json={"url": "https://example.com/x"}, headers=_auth())
+    assert r.status_code == 422
+    assert not (home / "vault" / "links").exists()
+
+
 def test_clips_html_to_markdown_into_links(client):
     c, home, _ = client
     r = c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML, "tags": ["ai"]}, headers=_auth())

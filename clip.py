@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,11 +32,6 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from readability import Document
 
-MAX_FETCH_BYTES = 5 * 1024 * 1024
-FETCH_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 trove-clipper"
-)
 JUNK_TAGS = ["script", "style", "nav", "footer", "aside", "form", "noscript", "iframe", "svg"]
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
@@ -100,19 +94,6 @@ def _html_to_markdown(content_html: str) -> str:
     return _BLANK_RUN.sub("\n\n", text).strip()
 
 
-def _fetch(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": FETCH_UA, "Accept": "text/html"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        ctype = resp.headers.get("content-type", "")
-        if "html" not in ctype and "text" not in ctype:
-            raise ValueError(f"unsupported content-type for clipping: {ctype or 'unknown'}")
-        raw = resp.read(MAX_FETCH_BYTES + 1)
-        if len(raw) > MAX_FETCH_BYTES:
-            raise ValueError("page exceeds max fetch size")
-        charset = resp.headers.get_content_charset() or "utf-8"
-        return raw.decode(charset, errors="replace")
-
-
 def _parse_meta(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -142,10 +123,11 @@ def _extract(payload: dict) -> dict:
         body = _html_to_markdown(selection) if _HTML_TAG.search(selection) else selection.strip()
         is_selection = True
     else:
-        if not html and url:
-            html = _fetch(url)
         if not html:
-            raise ValueError("no html, selection, or fetchable url to extract from")
+            # By design the server never fetches a URL itself — the browser
+            # captures the rendered (possibly logged-in) DOM and sends it. No
+            # html means there's nothing to extract (and no SSRF surface).
+            raise ValueError("no page content — send 'html' or 'selection' (the server does not fetch URLs)")
         try:
             doc = Document(html)
             body = _html_to_markdown(doc.summary(html_partial=True))
