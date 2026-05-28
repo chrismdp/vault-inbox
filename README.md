@@ -128,8 +128,15 @@ fire the transcribe hook or create a project, so clips don't bloat the inbox.
 ```
 bookmarklet / share → POST /clip (Authorization: Bearer <token>)
   → readability extracts the article + markdownify → markdown
-  → writes ~/vault/clippings/<slug>-<urlhash>.md  (validates as a `clipping`)
+  → writes ~/vault/links/reference/<slug>.md
 ```
+
+Clips are written in the **same house style as `save-article.sh`** (the
+`/process-link` fetcher): slug filenames with `-2..-9` collision disambiguation,
+single-quoted YAML, and `title / url / source / saved / status: to-read` — so a
+clip is indistinguishable from any other saved article and lands in the read
+queue. The destination is configurable with `TROVE_CLIP_DEST` (a subdir under
+`~/vault`, default `links/reference`; an absolute path is used as-is).
 
 Conversion is **server-side** on purpose: a bookmarklet can't load a converter
 in-page under a strict Content-Security-Policy, so it just sends the rendered
@@ -146,7 +153,8 @@ HTML (or a text selection, or a bare URL) and the server does the extraction.
 | `tags` | array of strings |
 
 If only `url` is sent, the server fetches and extracts it. Re-clipping the same
-URL overwrites the same file. Returns `{ok, path, title, updated, bytes}`.
+URL overwrites its file; a different page with the same title-slug gets the next
+free `-N` suffix. Returns `{ok, path, title, updated, bytes}`.
 
 ```bash
 curl -X POST https://your.host/clip -H "Authorization: Bearer $TOKEN" \

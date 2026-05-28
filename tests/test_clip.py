@@ -1,4 +1,4 @@
-"""Tests for the /clip endpoint — auth, extraction, selection, routing."""
+"""Tests for the /clip endpoint — auth, extraction, selection, routing, dest."""
 
 import importlib
 import sys
@@ -30,70 +30,84 @@ def client(tmp_path, monkeypatch):
         sys.modules.pop(mod, None)
     main = importlib.import_module("main")
     monkeypatch.setattr(main, "TRANSCRIBE_SCRIPT", tmp_path / "nope.sh")
-    return TestClient(main.app), tmp_path
+    return TestClient(main.app), tmp_path, monkeypatch
 
 
 def _auth(h=TOKEN):
     return {"authorization": f"Bearer {h}"}
 
 
+def _reference(home):
+    return home / "vault" / "links" / "reference"
+
+
 def test_requires_auth(client):
-    c, _ = client
+    c, _, _ = client
     assert c.post("/clip", json={"url": "https://x.com"}).status_code == 401
     assert c.post("/clip", json={"url": "https://x.com"}, headers=_auth("wrong")).status_code == 403
 
 
 def test_requires_valid_url(client):
-    c, _ = client
-    r = c.post("/clip", json={"title": "no url"}, headers=_auth())
-    assert r.status_code == 422
+    c, _, _ = client
+    assert c.post("/clip", json={"title": "no url"}, headers=_auth()).status_code == 422
 
 
 def test_clips_html_to_markdown(client):
-    c, home = client
+    c, home, _ = client
     r = c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML, "tags": ["ai"]}, headers=_auth())
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] and not body["updated"]
+    assert r.status_code == 200 and r.json()["ok"] and not r.json()["updated"]
 
-    files = list((home / "vault" / "clippings").glob("*.md"))
+    files = list(_reference(home).glob("*.md"))
     assert len(files) == 1
+    assert files[0].name == "real-title.md"  # slug filename, house style
     text = files[0].read_text()
-    assert "type: clipping" in text
-    assert "title: Real Title" in text
-    assert "author: Jane Doe" in text
-    assert "**bold**" in text  # formatting preserved
-    assert "[link](https://l.com)" in text  # links preserved
-    assert "Home About" not in text  # nav stripped
-    assert "junk" not in text  # footer stripped
+    assert "title: 'Real Title'" in text  # single-quoted, house style
+    assert "status: to-read" in text  # lands in the read queue
+    assert "source: 'web clip'" in text
+    assert "type: clipping" not in text  # NOT the foreign shape
+    assert "**bold**" in text and "[link](https://l.com)" in text  # formatting kept
+    assert "Home About" not in text and "junk" not in text  # nav/footer stripped
 
 
-def test_clips_selection(client):
-    c, home = client
+def test_clips_selection_marks_source(client):
+    c, home, _ = client
     r = c.post(
         "/clip",
         json={"url": "https://s.com/y", "title": "Sel", "selection": "<p>just <em>this</em></p>"},
         headers=_auth(),
     )
     assert r.status_code == 200
-    text = next((home / "vault" / "clippings").glob("*.md")).read_text()
-    assert "clip_kind: selection" in text
+    text = next(_reference(home).glob("*.md")).read_text()
+    assert "source: 'web clip (selection)'" in text
     assert "just *this*" in text
 
 
 def test_reclip_same_url_overwrites(client):
-    c, home = client
+    c, home, _ = client
     p = {"url": "https://example.com/post", "html": ARTICLE_HTML}
     c.post("/clip", json=p, headers=_auth())
-    r2 = c.post("/clip", json=p, headers=_auth())
-    assert r2.json()["updated"] is True
-    assert len(list((home / "vault" / "clippings").glob("*.md"))) == 1
+    assert c.post("/clip", json=p, headers=_auth()).json()["updated"] is True
+    assert len(list(_reference(home).glob("*.md"))) == 1
+
+
+def test_same_slug_different_url_disambiguates(client):
+    c, home, _ = client
+    c.post("/clip", json={"url": "https://a.com/x", "title": "Same Title", "selection": "one"}, headers=_auth())
+    c.post("/clip", json={"url": "https://b.com/y", "title": "Same Title", "selection": "two"}, headers=_auth())
+    names = sorted(p.name for p in _reference(home).glob("*.md"))
+    assert names == ["same-title-2.md", "same-title.md"]
+
+
+def test_dest_is_configurable(client):
+    c, home, monkeypatch = client
+    monkeypatch.setenv("TROVE_CLIP_DEST", "clippings")
+    c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML}, headers=_auth())
+    assert list((home / "vault" / "clippings").glob("*.md"))
+    assert not _reference(home).exists()
 
 
 def test_clip_does_not_touch_voice_pipeline(client):
-    """A clip must not write into audio/recordings or fire the transcribe hook."""
-    c, home = client
+    c, home, _ = client
     c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML}, headers=_auth())
-    assert not (home / "vault" / "audio" / "recordings").exists() or not list(
-        (home / "vault" / "audio" / "recordings").glob("*")
-    )
+    rec = home / "vault" / "audio" / "recordings"
+    assert not rec.exists() or not list(rec.glob("*"))
