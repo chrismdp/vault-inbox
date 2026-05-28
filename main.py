@@ -4,6 +4,7 @@ import hmac
 import os
 import re
 import subprocess
+import traceback
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -58,7 +59,8 @@ def check_auth(authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     presented = authorization.removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(presented, TOKEN):
+    # Compare as bytes — hmac.compare_digest raises TypeError on non-ASCII str.
+    if not hmac.compare_digest(presented.encode("utf-8"), TOKEN.encode("utf-8")):
         raise HTTPException(status_code=403, detail="invalid token")
 
 
@@ -100,7 +102,8 @@ def clip_setup():
 
 
 def _clip_token_ok(token: str | None) -> bool:
-    return bool(token) and hmac.compare_digest(token, TOKEN)
+    # Compare as bytes — hmac.compare_digest raises TypeError on non-ASCII str.
+    return bool(token) and hmac.compare_digest(token.encode("utf-8"), TOKEN.encode("utf-8"))
 
 
 _CLIP_OK_HTML = (
@@ -154,6 +157,13 @@ async def clip(request: Request, authorization: str | None = Header(default=None
         if is_json:
             raise HTTPException(status_code=422, detail=str(e))
         return HTMLResponse(f"<h1>422 — {escape(str(e))}</h1>", status_code=422)
+    except Exception:
+        # Pathological input (e.g. RecursionError on deeply-nested HTML) must not
+        # leak a stack trace or an ugly 500 — log it and return a clean error.
+        traceback.print_exc()
+        if is_json:
+            raise HTTPException(status_code=500, detail="clip failed")
+        return HTMLResponse("<h1>500 — clip failed</h1>", status_code=500)
 
     if is_json:
         return JSONResponse({"ok": True, **result})

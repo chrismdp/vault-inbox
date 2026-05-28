@@ -44,7 +44,7 @@ def _dest_dir() -> Path:
     # Resolved at call time so it honours the real HOME at runtime and a
     # monkeypatched Path.home() in tests. TROVE_CLIP_DEST overrides the subdir,
     # but "links" is what the auto-pipeline (collect.sh + /process-link) scans.
-    sub = os.environ.get("TROVE_CLIP_DEST", "links").strip()
+    sub = os.environ.get("TROVE_CLIP_DEST", "links").strip() or "links"
     p = Path(sub)
     return p if p.is_absolute() else Path.home() / "vault" / sub
 
@@ -59,12 +59,15 @@ def _url_hash(url: str) -> str:
     h = 5381
     for ch in url:
         h = ((h << 5) + h + ord(ch)) & 0xFFFFFFFF
-    return format(h, "x").rjust(7, "0")[:7]
+    return format(h, "08x")  # full 32-bit hash (8 hex chars), no truncation
 
 
 def _yamlq(value) -> str:
-    # Single-quoted YAML, matching save-article.sh's yamlq (doubles internal ').
-    return "'" + str(value).replace("'", "''") + "'"
+    # Single-quoted YAML (matches save-article.sh's yamlq, doubling internal ').
+    # Collapse CR/LF/Tab to a space so a value with a newline can't span lines
+    # or smuggle a fake key into the frontmatter block.
+    s = re.sub(r"[\r\n\t]+", " ", str(value)).strip()
+    return "'" + s.replace("'", "''") + "'"
 
 
 # Emitted bare (no quotes), matching save-article.sh: a date and an enum.
@@ -105,7 +108,7 @@ def _parse_meta(html: str) -> dict:
         return ""
 
     return {
-        "title": (soup.title.string.strip() if soup.title and soup.title.string else ""),
+        "title": (soup.title.get_text(strip=True) if soup.title else ""),
         "author": m(('meta[name="author"]', "content"), ('meta[property="article:author"]', "content")),
         "published": m(('meta[property="article:published_time"]', "content"), ('meta[name="date"]', "content"), ("time[datetime]", "datetime")),
     }
@@ -162,7 +165,11 @@ def _existing_url(path: Path) -> str:
         return ""
     if not head.startswith("---"):
         return ""
-    m = _FM_URL.search(head)
+    # Search only the frontmatter block (between the opening --- and the next
+    # --- line) so a `url:`-looking line in the body can't be mistaken for it.
+    end = head.find("\n---", 3)
+    fm = head[:end] if end != -1 else head
+    m = _FM_URL.search(fm)
     return m.group(1).strip() if m else ""
 
 

@@ -92,6 +92,37 @@ def test_form_post_returns_html_and_takes_token_field(client):
     assert r2.status_code == 401 and "text/html" in r2.headers["content-type"]
 
 
+def test_form_path_422_on_no_content(client):
+    """The bookmarklet (form) path's 422 branch returns HTML, not a JSON 500."""
+    c, _, _ = client
+    r = c.post("/clip", data={"token": TOKEN, "url": "https://example.com/x"})
+    assert r.status_code == 422 and "text/html" in r.headers["content-type"]
+
+
+def test_non_ascii_token_is_rejected_not_500(client):
+    """A non-ASCII form token must be a clean 401, not a hmac.compare_digest
+    TypeError → 500. (The header path can't carry non-ASCII over the wire.)"""
+    c, _, _ = client
+    r = c.post("/clip", data={"token": "töken", "url": "https://x.com", "html": ARTICLE_HTML})
+    assert r.status_code == 401
+
+
+def test_tags_as_comma_string(client):
+    c, home, _ = client
+    c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML, "tags": "ai, reading ,"}, headers=_auth())
+    text = next(_links(home).glob("*.md")).read_text()
+    assert "tags: ['ai', 'reading']" in text  # split, trimmed, empties dropped
+
+
+def test_title_with_quote_and_newline_stays_single_line(client):
+    c, home, _ = client
+    c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML,
+                          "title": "It's a\nbroken title"}, headers=_auth())
+    text = next(_links(home).glob("*.md")).read_text()
+    # newline collapsed, quote doubled, frontmatter stays one line
+    assert "title: 'It''s a broken title'" in text
+
+
 def test_clips_selection_marks_source(client):
     c, home, _ = client
     r = c.post(
