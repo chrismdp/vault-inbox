@@ -180,12 +180,14 @@ curl -X POST https://your.host/clip -H "Authorization: Bearer $TOKEN" \
 
 ### Bookmarklet setup
 
-Visit `https://your.host/clip/setup`, paste your token, and it builds a
-bookmarklet with your endpoint + token baked in (the token stays in your
-browser). On iOS: bookmark that page, then edit the bookmark's URL and paste the
-generated `javascript:` link. Tapping it on any article clips it (or your current
-text selection) and opens a "Clipped ✓" tab. `clip-bookmarklet.src.js` is the
-readable source.
+Visit `https://your.host/clip/setup` and paste your token (it stays in the
+browser). The page shows the generated bookmarklet in a selectable box with a
+**Copy** button — because copying a `javascript:` link's href is near-impossible
+on iOS. To install on iOS Safari: tap **Copy bookmarklet**, bookmark that page,
+then Bookmarks → Edit → tap the bookmark → replace its address with the pasted
+code and rename it. On desktop, drag the link instead. Tapping the bookmark on
+any article clips it (or your current text selection) and opens a "Clipped ✓"
+tab. `clip-bookmarklet.src.js` is the readable source.
 
 > **The ceiling:** a site that locks down `default-src`/`form-action` too will
 > still block even the form-POST. Only a browser extension fully bypasses page

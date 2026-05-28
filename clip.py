@@ -273,25 +273,63 @@ BOOKMARKLET_TEMPLATE = (
 def install_page() -> str:
     import json as _json
 
-    # The endpoint is computed in-browser as location.origin + '/clip', so it's
-    # correct behind nginx without the server needing to know its public URL.
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+    # Plain string with a __TMPL__ placeholder (avoids f-string brace-escaping
+    # for all the CSS/JS). The bookmarklet is shown in a selectable box with a
+    # Copy button — copying a `javascript:` link's href is near-impossible on
+    # iOS, so we hand the user the literal code to paste into a bookmark.
+    page = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Clip to vault — setup</title>
-<style>body{{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;color:#1d2129}}
-h1{{font-size:1.4rem}}input{{width:100%;padding:.6rem;font-size:1rem;box-sizing:border-box;border:1px solid #cbd2d9;border-radius:8px}}
-.bm{{display:inline-block;margin:.8rem 0;padding:.7rem 1.2rem;background:#0645ad;color:#fff;border-radius:8px;text-decoration:none;font-weight:600}}
-.bm.off{{background:#9aa5b1;pointer-events:none}}.muted{{color:#6b7280}}code{{font-family:ui-monospace,monospace}}</style></head><body>
+<style>
+ body{font:16px/1.6 system-ui,-apple-system,sans-serif;max-width:42rem;margin:1.4rem auto;padding:0 1rem;color:#1d2129}
+ h1{font-size:1.4rem;margin-bottom:.2rem}
+ input,textarea{width:100%;padding:.6rem;font-size:1rem;box-sizing:border-box;border:1px solid #cbd2d9;border-radius:8px}
+ textarea{font-family:ui-monospace,Menlo,monospace;font-size:12px;height:6.5rem;white-space:pre-wrap;word-break:break-all;background:#f7f8fa;color:#333}
+ button{margin-top:.5rem;padding:.7rem 1.3rem;font-size:1rem;font-weight:600;background:#0645ad;color:#fff;border:0;border-radius:8px;cursor:pointer}
+ button:disabled{background:#9aa5b1;cursor:default}
+ .muted{color:#6b7280}.step{background:#eef6ff;border-radius:8px;padding:.3rem 1rem;margin:1rem 0}
+ ol{padding-left:1.2rem}li{margin:.35rem 0}code{font-family:ui-monospace,monospace;background:#eef;padding:1px 5px;border-radius:4px}
+ a.drag{color:#0645ad;font-weight:600;text-decoration:none}
+</style></head><body>
 <h1>Clip to vault — setup</h1>
-<p class="muted">Clips an article into your vault as markdown.</p>
-<p>1. Paste your clip token (it stays in this browser):</p>
-<input id="tok" type="password" placeholder="VOICE_BEARER_TOKEN" autocomplete="off">
-<p>2. Add this to your bookmarks (drag on desktop; on iOS bookmark this page, then edit the bookmark's URL and paste the generated link):</p>
-<a id="bm" class="bm off" href="#">📎 Clip to vault</a>
-<p class="muted">Tapping it on any page clips that article (or your current text selection).</p>
+<p class="muted">Saves an article into <code>~/vault/links/</code>.</p>
+
+<p><b>1.</b> Paste your clip token (stays in this browser):</p>
+<input id="tok" type="password" placeholder="VOICE_BEARER_TOKEN" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+
+<p><b>2.</b> Copy the bookmarklet:</p>
+<textarea id="out" readonly placeholder="(enter your token above first)"></textarea>
+<button id="copy" disabled>Copy bookmarklet</button>
+
+<div class="step">
+<p><b>3. Install on iOS Safari:</b></p>
+<ol>
+ <li>Tap <b>Copy bookmarklet</b> above.</li>
+ <li>Bookmark <i>this</i> page — Share → <b>Add Bookmark</b> → Save.</li>
+ <li>Open <b>Bookmarks</b> → <b>Edit</b> → tap that bookmark.</li>
+ <li>Select the whole address, delete it, <b>paste</b>, and rename it “Clip to vault”. Done.</li>
+</ol>
+<p class="muted">Desktop: drag this to your bookmarks bar instead → <a id="drag" class="drag" href="#">📎 Clip to vault</a></p>
+</div>
+
+<p class="muted">Then tapping the bookmark on any article clips it (or your current text selection) and opens a “Clipped ✓” tab.</p>
+
 <script>
-var TMPL={_json.dumps(BOOKMARKLET_TEMPLATE)},EP=location.origin+'/clip';
-var tok=document.getElementById('tok'),bm=document.getElementById('bm');
-tok.addEventListener('input',function(){{var t=tok.value.trim();if(!t){{bm.classList.add('off');bm.href='#';return;}}
-bm.href='javascript:'+encodeURIComponent(TMPL.replace('__ENDPOINT__',EP).replace('__TOKEN__',t));bm.classList.remove('off');}});
-bm.addEventListener('click',function(e){{if(bm.classList.contains('off'))e.preventDefault();}});
+ var TMPL=__TMPL__, EP=location.origin+'/clip';
+ var tok=document.getElementById('tok'),out=document.getElementById('out'),copy=document.getElementById('copy'),drag=document.getElementById('drag');
+ function build(){
+   var t=tok.value.trim();
+   if(!t){out.value='';copy.disabled=true;drag.removeAttribute('href');return;}
+   var code='javascript:'+encodeURIComponent(TMPL.replace('__ENDPOINT__',EP).replace('__TOKEN__',t));
+   out.value=code;copy.disabled=false;drag.href=code;
+ }
+ tok.addEventListener('input',build);
+ copy.addEventListener('click',function(){
+   if(!out.value)return;
+   var done=function(){copy.textContent='Copied ✓';setTimeout(function(){copy.textContent='Copy bookmarklet';},1600);};
+   if(navigator.clipboard&&navigator.clipboard.writeText){
+     navigator.clipboard.writeText(out.value).then(done,function(){out.focus();out.select();document.execCommand('copy');done();});
+   }else{out.focus();out.select();document.execCommand('copy');done();}
+ });
+ drag.addEventListener('click',function(e){if(!drag.getAttribute('href'))e.preventDefault();});
 </script></body></html>"""
+    return page.replace("__TMPL__", _json.dumps(BOOKMARKLET_TEMPLATE))
