@@ -122,43 +122,60 @@ If `$HOME/vault/scripts/transcribe-voice-inbox.sh` doesn't exist, the endpoint j
 ## Web clipping (`/clip`)
 
 The same endpoint also takes web clips — grab an article and get it into the
-vault as clean markdown. Deliberately separate from `/voice`: it does **not**
-fire the transcribe hook or create a project, so clips don't bloat the inbox.
+vault as clean markdown. The hard part it solves: **content that only exists in
+your logged-in, JS-rendered browser** (paywalled, authenticated, SPA) which no
+server could fetch. So the browser captures the *rendered DOM* and ships the
+bytes; the server **never fetches** — it extracts markdown from what it's given
+and drops the file into `~/vault/links/`, the vault's browser-extension drop
+zone.
 
 ```
-bookmarklet / share → POST /clip (Authorization: Bearer <token>)
-  → readability extracts the article + markdownify → markdown
-  → writes ~/vault/links/reference/<slug>.md
+bookmarklet (form-POST) → /clip → readability + markdownify → markdown
+  → writes ~/vault/links/<slug>.md
+  → collect.sh emits a [links] inbox item → /triage → /process-link
+  → reads the LOCAL file (no refetch), wiki-merges, files into links/reference/
 ```
 
-Clips are written in the **same house style as `save-article.sh`** (the
-`/process-link` fetcher): slug filenames with `-2..-9` collision disambiguation,
-single-quoted YAML, and `title / url / source / saved / status: to-read` — so a
-clip is indistinguishable from any other saved article and lands in the read
-queue. The destination is configurable with `TROVE_CLIP_DEST` (a subdir under
-`~/vault`, default `links/reference`; an absolute path is used as-is).
+Everything after the file write is the **existing pipeline**, untouched. The
+clip just produces the drop. Deliberately separate from `/voice`: no transcribe
+hook. Destination is configurable via `TROVE_CLIP_DEST`, but it must stay
+`links` for the auto-pipeline to pick it up (`collect.sh` only scans `links/`,
+and `/process-link` only treats `links/` as a no-refetch local source).
+
+It writes a file per clip with frontmatter `title / url / author / source /
+saved` and the article as the body — exactly what `/process-link` reads for a
+local drop. Slug filenames with `-2..-9` collision disambiguation; same-URL
+re-clip overwrites.
 
 Conversion is **server-side** on purpose: a bookmarklet can't load a converter
-in-page under a strict Content-Security-Policy, so it just sends the rendered
-HTML (or a text selection, or a bare URL) and the server does the extraction.
+in-page under a strict Content-Security-Policy, so it just reads the rendered
+DOM (which is never CSP-blocked) and ships it.
 
-`POST /clip` takes JSON (all optional except `url`):
+`/clip` accepts two shapes (all fields optional except `url`):
+
+- **form-encoded** (the bookmarklet): `token` is a field; returns an HTML
+  "Clipped ✓" page in the new tab. Submitting a `<form>` rides the `form-action`
+  CSP directive instead of `connect-src`, so it gets the bytes out of pages
+  where a `fetch` would be blocked.
+- **JSON** (extension / curl): bearer header; returns JSON.
 
 | field | meaning |
 |---|---|
 | `url` | **required** — the article URL |
 | `html` | rendered page HTML — server runs readability over it |
-| `selection` | clip just this (html or text); tags the note `clip_kind: selection` |
-| `title`, `author`, `site`, `published`, `excerpt` | metadata overrides |
-| `tags` | array of strings |
+| `selection` | clip just this (html or text); marks `source: web clip (selection)` |
+| `title`, `author`, `published`, `tags` | metadata overrides |
+| `token` | the shared secret, for the form path (or use the bearer header) |
 
-If only `url` is sent, the server fetches and extracts it. Re-clipping the same
-URL overwrites its file; a different page with the same title-slug gets the next
-free `-N` suffix. Returns `{ok, path, title, updated, bytes}`.
+If only `url` is sent the server *will* fetch it — but that path can't see
+paywalled/authenticated content, which is the whole reason the bookmarklet
+sends the rendered DOM instead. Re-clipping the same URL overwrites its file; a
+different page with the same title-slug gets the next free `-N` suffix.
 
 ```bash
+# JSON path (extension / scripting)
 curl -X POST https://your.host/clip -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' -d '{"url":"https://example.com/article"}'
+  -H 'content-type: application/json' -d '{"url":"https://example.com/article","html":"<html>…</html>"}'
 ```
 
 ### Bookmarklet setup
@@ -167,7 +184,13 @@ Visit `https://your.host/clip/setup`, paste your token, and it builds a
 bookmarklet with your endpoint + token baked in (the token stays in your
 browser). On iOS: bookmark that page, then edit the bookmark's URL and paste the
 generated `javascript:` link. Tapping it on any article clips it (or your current
-text selection). `clip-bookmarklet.src.js` is the readable source.
+text selection) and opens a "Clipped ✓" tab. `clip-bookmarklet.src.js` is the
+readable source.
+
+> **The ceiling:** a site that locks down `default-src`/`form-action` too will
+> still block even the form-POST. Only a browser extension fully bypasses page
+> CSP — that's the desktop escape hatch. On mobile (no app), the form-POST is
+> the most robust no-install option.
 
 ## License
 

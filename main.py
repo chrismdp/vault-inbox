@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -98,25 +99,65 @@ def clip_setup():
     return clip_lib.install_page()
 
 
+def _clip_token_ok(token: str | None) -> bool:
+    return bool(token) and hmac.compare_digest(token, TOKEN)
+
+
+_CLIP_OK_HTML = (
+    "<!doctype html><meta charset=utf-8>"
+    '<meta name=viewport content="width=device-width,initial-scale=1"><title>Clipped</title>'
+    '<body style="font:600 19px system-ui;display:grid;place-items:center;height:88vh;margin:0;'
+    'text-align:center;color:#0a7f3f">'
+    "<div>✓ Clipped to vault"
+    '<div style="font-weight:400;font-size:14px;color:#555;margin-top:6px">{title}</div>'
+    '<div style="font-weight:400;font-size:12px;color:#999">{path}</div></div>'
+)
+
+
 @app.post("/clip")
 async def clip(request: Request, authorization: str | None = Header(default=None)):
-    """Accept a web clip (JSON) and write it to vault/clippings/ as markdown.
+    """Accept a web clip and write it to ~/vault/links/ as markdown, where the
+    existing pipeline (collect.sh → /triage → /process-link) picks it up.
 
-    Deliberately separate from /voice: no transcribe hook, no project creation —
-    clips don't go through the voice pipeline, so they don't bloat the inbox.
+    Two shapes:
+      - JSON (extension / curl): bearer header, returns JSON.
+      - form-encoded (bookmarklet form-POST in a new tab): token as a field,
+        returns an HTML confirmation page. Form submission dodges connect-src CSP.
+    Separate from /voice: no transcribe hook, so clips don't bloat the inbox.
     """
-    check_auth(authorization)
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="expected a JSON body")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    ctype = request.headers.get("content-type", "")
+    is_json = "application/json" in ctype
+    if is_json:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="expected a JSON body")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body must be an object")
+    else:
+        form = await request.form()
+        payload = {k: v for k, v in form.items() if isinstance(v, str)}
+
+    header_token = ""
+    if authorization and authorization.startswith("Bearer "):
+        header_token = authorization.removeprefix("Bearer ").strip()
+    token = header_token or payload.get("token") or ""
+
+    if not _clip_token_ok(token):
+        if is_json:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return HTMLResponse("<h1>401 — bad or missing clip token</h1>", status_code=401)
+
     try:
         result = clip_lib.save_clip(payload)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    return JSONResponse({"ok": True, **result})
+        if is_json:
+            raise HTTPException(status_code=422, detail=str(e))
+        return HTMLResponse(f"<h1>422 — {escape(str(e))}</h1>", status_code=422)
+
+    if is_json:
+        return JSONResponse({"ok": True, **result})
+    return HTMLResponse(_CLIP_OK_HTML.format(title=escape(result["title"]), path=escape(result["path"])))
 
 
 @app.post("/voice")

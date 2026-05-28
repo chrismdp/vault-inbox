@@ -1,17 +1,23 @@
 """Web-clip handling for voice-inbox.
 
-A clip is a POST of a web page (or selection) that we turn into clean markdown
-and drop into the vault — by default into links/reference/, matching the house
-style that save-article.sh (the /process-link fetcher) writes, so a clip is
-indistinguishable from any other saved article and lands in the read queue.
+A clip is a POST of a web page (or selection). The browser captures the
+*rendered* DOM (the hard part: paywalled / logged-in / JS content the server
+could never fetch itself), and we extract clean markdown from those bytes and
+drop the file into ~/vault/links/ — the vault's "browser-extension drop" zone.
 
-Deliberately separate from /voice: no transcribe hook, no project, so clips
-don't bloat the inbox. Conversion is server-side (a bookmarklet can't load a
-converter in-page under strict CSP): readability finds the main content,
-markdownify turns it into markdown. The url-only path fetches the page first.
+From there the existing pipeline takes over, untouched: collect.sh scans
+links/*.md and emits a `[links]` inbox item; the inbox-watcher (~7.5s) runs
+/triage, which dispatches /process-link; /process-link reads the LOCAL file
+(it knows not to refetch a paywalled URL), wiki-merges it, and files the
+immutable source into links/reference/. The server never fetches anything.
+
+Conversion is server-side (a bookmarklet can't load a converter in-page under
+strict CSP): readability finds the main content, markdownify makes markdown.
 
 Configurable: TROVE_CLIP_DEST sets the destination subdir under ~/vault
-(default "links/reference"); an absolute path is used as-is.
+(default "links"). It must stay "links" for the auto-pipeline to pick it up —
+collect.sh only scans links/, and /process-link only treats links/ as a
+no-refetch local source.
 """
 
 from __future__ import annotations
@@ -42,8 +48,9 @@ _FM_URL = re.compile(r'^url:\s*["\']?([^"\'\n]+)["\']?\s*$', re.MULTILINE)
 
 def _dest_dir() -> Path:
     # Resolved at call time so it honours the real HOME at runtime and a
-    # monkeypatched Path.home() in tests. TROVE_CLIP_DEST overrides the subdir.
-    sub = os.environ.get("TROVE_CLIP_DEST", "links/reference").strip()
+    # monkeypatched Path.home() in tests. TROVE_CLIP_DEST overrides the subdir,
+    # but "links" is what the auto-pipeline (collect.sh + /process-link) scans.
+    sub = os.environ.get("TROVE_CLIP_DEST", "links").strip()
     p = Path(sub)
     return p if p.is_absolute() else Path.home() / "vault" / sub
 
@@ -208,8 +215,8 @@ def save_clip(payload: dict) -> dict:
         tags = [t.strip() for t in tags.split(",")]
     tags = [t for t in (str(t).strip() for t in tags) if t]
 
-    # House style (save-article.sh): title / url / source / saved / status,
-    # plus author + tags when we have them, and a marker for selection clips.
+    # A links/ drop for /process-link to read locally. It pulls `url` from the
+    # frontmatter for attribution and uses the body as the article (no refetch).
     fields = {
         "title": data["title"],
         "url": url,
@@ -217,7 +224,6 @@ def save_clip(payload: dict) -> dict:
         "published": data["published"],
         "source": "web clip" + (" (selection)" if data["is_selection"] else ""),
         "saved": today,
-        "status": "to-read",
         "tags": tags,
     }
 
@@ -241,22 +247,26 @@ def save_clip(payload: dict) -> dict:
     }
 
 
-# Bookmarklet body with __ENDPOINT__/__TOKEN__ placeholders. The setup page
-# substitutes them in the browser, so the token never round-trips to the server.
+# Bookmarklet body with __ENDPOINT__/__TOKEN__ placeholders (the setup page
+# substitutes them in the browser, so the token never round-trips to the server).
+#
+# It POSTs via a hidden <form> in a new tab, NOT fetch(). A form submission rides
+# the `form-action` CSP directive (rarely set) instead of `connect-src` (often
+# 'self'), so it gets the captured bytes out of pages where a fetch would be
+# blocked. The bytes never leave the request body; nothing huge goes in a URL.
 BOOKMARKLET_TEMPLATE = (
     "(function(){try{var s=window.getSelection&&window.getSelection(),h='';"
     "if(s&&s.rangeCount&&!s.isCollapsed){var d=document.createElement('div');"
     "for(var i=0;i<s.rangeCount;i++)d.appendChild(s.getRangeAt(i).cloneContents());h=d.innerHTML;}"
     "var m=function(q){var e=document.querySelector(q);return e?(e.getAttribute('content')||e.getAttribute('datetime')||''):'';};"
-    "var p={url:location.href,title:document.title,html:h?'':document.documentElement.outerHTML,selection:h,"
-    "author:m('meta[name=\\\"author\\\"]'),published:m('meta[property=\\\"article:published_time\\\"]')||m('time[datetime]')};"
-    "var t=function(x,o){var e=document.createElement('div');e.textContent=x;"
-    "e.style.cssText='position:fixed;z-index:2147483647;left:50%;top:24px;transform:translateX(-50%);background:'+(o?'#0a7f3f':'#b00020')+';color:#fff;font:600 14px system-ui;padding:10px 16px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3)';"
-    "document.body.appendChild(e);setTimeout(function(){e.remove();},2800);};t('Clipping…',1);"
-    "fetch('__ENDPOINT__',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer __TOKEN__'},body:JSON.stringify(p)})"
-    ".then(function(r){return r.json().catch(function(){return{ok:r.ok};});})"
-    ".then(function(j){t(j&&j.ok?((j.updated?'Updated ':'Clipped ')+(j.path||'')):'Error: '+((j&&j.detail)||'failed'),j&&j.ok);})"
-    ".catch(function(e){t('Blocked by page? '+e.message,0);});}catch(e){alert('Clip error: '+e.message);}})();"
+    "var f={token:'__TOKEN__',url:location.href,title:document.title,"
+    "html:h?'':document.documentElement.outerHTML,selection:h,"
+    "author:m('meta[name=\"author\"]'),published:m('meta[property=\"article:published_time\"]')||m('time[datetime]')};"
+    "var form=document.createElement('form');form.method='POST';form.action='__ENDPOINT__';"
+    "form.target='_blank';form.style.display='none';"
+    "for(var k in f){var ta=document.createElement('textarea');ta.name=k;ta.value=f[k]==null?'':f[k];form.appendChild(ta);}"
+    "document.body.appendChild(form);form.submit();"
+    "setTimeout(function(){form.remove();},1000);}catch(e){alert('Clip error: '+e.message);}})();"
 )
 
 

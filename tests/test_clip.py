@@ -37,14 +37,14 @@ def _auth(h=TOKEN):
     return {"authorization": f"Bearer {h}"}
 
 
-def _reference(home):
-    return home / "vault" / "links" / "reference"
+def _links(home):
+    return home / "vault" / "links"  # the browser-extension drop zone
 
 
 def test_requires_auth(client):
     c, _, _ = client
     assert c.post("/clip", json={"url": "https://x.com"}).status_code == 401
-    assert c.post("/clip", json={"url": "https://x.com"}, headers=_auth("wrong")).status_code == 403
+    assert c.post("/clip", json={"url": "https://x.com"}, headers=_auth("wrong")).status_code == 401
 
 
 def test_requires_valid_url(client):
@@ -52,21 +52,35 @@ def test_requires_valid_url(client):
     assert c.post("/clip", json={"title": "no url"}, headers=_auth()).status_code == 422
 
 
-def test_clips_html_to_markdown(client):
+def test_clips_html_to_markdown_into_links(client):
     c, home, _ = client
     r = c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML, "tags": ["ai"]}, headers=_auth())
     assert r.status_code == 200 and r.json()["ok"] and not r.json()["updated"]
 
-    files = list(_reference(home).glob("*.md"))
-    assert len(files) == 1
-    assert files[0].name == "real-title.md"  # slug filename, house style
+    files = list(_links(home).glob("*.md"))  # root, where collect.sh scans
+    assert len(files) == 1 and files[0].name == "real-title.md"
     text = files[0].read_text()
-    assert "title: 'Real Title'" in text  # single-quoted, house style
-    assert "status: to-read" in text  # lands in the read queue
+    assert "title: 'Real Title'" in text and "url: 'https://example.com/post'" in text
     assert "source: 'web clip'" in text
-    assert "type: clipping" not in text  # NOT the foreign shape
+    assert "type: clipping" not in text
     assert "**bold**" in text and "[link](https://l.com)" in text  # formatting kept
     assert "Home About" not in text and "junk" not in text  # nav/footer stripped
+
+
+def test_form_post_returns_html_and_takes_token_field(client):
+    """The bookmarklet path: form-encoded, token as a field, HTML response."""
+    c, home, _ = client
+    r = c.post(
+        "/clip",
+        data={"token": TOKEN, "url": "https://example.com/post", "html": ARTICLE_HTML},
+    )
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "Clipped to vault" in r.text
+    assert list(_links(home).glob("*.md"))
+    # bad token via form → HTML 401, nothing written
+    r2 = c.post("/clip", data={"token": "nope", "url": "https://x.com/y", "html": ARTICLE_HTML})
+    assert r2.status_code == 401 and "text/html" in r2.headers["content-type"]
 
 
 def test_clips_selection_marks_source(client):
@@ -77,7 +91,7 @@ def test_clips_selection_marks_source(client):
         headers=_auth(),
     )
     assert r.status_code == 200
-    text = next(_reference(home).glob("*.md")).read_text()
+    text = next(_links(home).glob("*.md")).read_text()
     assert "source: 'web clip (selection)'" in text
     assert "just *this*" in text
 
@@ -87,14 +101,14 @@ def test_reclip_same_url_overwrites(client):
     p = {"url": "https://example.com/post", "html": ARTICLE_HTML}
     c.post("/clip", json=p, headers=_auth())
     assert c.post("/clip", json=p, headers=_auth()).json()["updated"] is True
-    assert len(list(_reference(home).glob("*.md"))) == 1
+    assert len(list(_links(home).glob("*.md"))) == 1
 
 
 def test_same_slug_different_url_disambiguates(client):
     c, home, _ = client
     c.post("/clip", json={"url": "https://a.com/x", "title": "Same Title", "selection": "one"}, headers=_auth())
     c.post("/clip", json={"url": "https://b.com/y", "title": "Same Title", "selection": "two"}, headers=_auth())
-    names = sorted(p.name for p in _reference(home).glob("*.md"))
+    names = sorted(p.name for p in _links(home).glob("*.md"))
     assert names == ["same-title-2.md", "same-title.md"]
 
 
@@ -103,7 +117,7 @@ def test_dest_is_configurable(client):
     monkeypatch.setenv("TROVE_CLIP_DEST", "clippings")
     c.post("/clip", json={"url": "https://example.com/post", "html": ARTICLE_HTML}, headers=_auth())
     assert list((home / "vault" / "clippings").glob("*.md"))
-    assert not _reference(home).exists()
+    assert not _links(home).exists()
 
 
 def test_clip_does_not_touch_voice_pipeline(client):
