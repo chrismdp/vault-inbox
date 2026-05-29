@@ -5,6 +5,11 @@
 
 *Started life as `voice-inbox`; it catches web articles too now.*
 
+<p align="center">
+  <img src="docs/overview.jpg" width="520"
+       alt="Two capture paths into one vault: press the phone Action Button to POST a voice note to /voice (auto-transcribed); tap a browser bookmarklet to POST a web clip to /clip (saved as clean markdown). Both land in your Obsidian vault.">
+</p>
+
 One small FastAPI service, bearer-token auth, bound to localhost. Two ways in,
 both landing in your Obsidian vault:
 
