@@ -44,8 +44,8 @@ downstream is your own scripts — none of your pipeline is baked in here.
 Needs Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/chrismdp/voice-inbox.git
-cd voice-inbox
+git clone https://github.com/chrismdp/vault-inbox.git
+cd vault-inbox
 uv sync
 ```
 
@@ -68,17 +68,17 @@ Optional env:
 
 ### Run it as a service (systemd)
 
-Copy to `~/.config/systemd/user/voice-inbox.service`:
+Copy to `~/.config/systemd/user/vault-inbox.service`:
 
 ```ini
 [Unit]
-Description=inbox (voice + web clips)
+Description=vault-inbox (voice + web clips)
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/path/to/voice-inbox
-EnvironmentFile=/path/to/voice-inbox/.env
+WorkingDirectory=/path/to/vault-inbox
+EnvironmentFile=/path/to/vault-inbox/.env
 ExecStart=/usr/local/bin/uv run --no-sync uvicorn main:app --host 127.0.0.1 --port 8790
 Restart=always
 RestartSec=5
@@ -87,7 +87,7 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-`systemctl --user enable --now voice-inbox` (plus `loginctl enable-linger $USER`
+`systemctl --user enable --now vault-inbox` (plus `loginctl enable-linger $USER`
 so it survives logout).
 
 ## Exposing it
@@ -97,22 +97,15 @@ your phone.
 
 ### Option A — Tailscale (private; recommended)
 
-[Tailscale Serve](https://tailscale.com/kb/1312/serve) puts the service on your
-tailnet with automatic HTTPS, reachable only by *your* devices — no public
-internet exposure, no nginx, no certificate to manage.
+Expose the service on your tailnet with automatic HTTPS, reachable only by *your*
+devices — no public internet exposure, no nginx, no certificate to manage. Use
+[Tailscale Serve](https://tailscale.com/kb/1312/serve) to proxy your tailnet name
+to `localhost:8790` (see their docs for the current command).
 
-```bash
-# Proxy the tailnet HTTPS name to the local service. The serve CLI syntax has
-# changed across versions — check `tailscale serve --help` for yours.
-tailscale serve --bg 8790
-tailscale serve status     # shows the https://<machine>.<tailnet>.ts.net URL
-```
-
-Your phone just needs the Tailscale app connected. Because the setup page derives
-its endpoint from whatever host you load it on, opening
-`https://<machine>.<tailnet>.ts.net/clip/setup` builds a bookmarklet that targets
-your tailnet automatically — and clipping public sites keeps working as long as
-Tailscale is up on the phone.
+Then load `/clip/setup` over your `https://<machine>.<tailnet>.ts.net` URL: since
+the setup page derives its endpoint from whatever host you open it on, the
+bookmarklet it builds targets your tailnet automatically. Clipping keeps working
+as long as the Tailscale app is connected on your phone.
 
 ### Option B — nginx + public TLS
 
