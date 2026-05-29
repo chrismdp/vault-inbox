@@ -248,14 +248,22 @@ BOOKMARKLET_TEMPLATE = (
     "if(s&&s.rangeCount&&!s.isCollapsed){var d=document.createElement('div');"
     "for(var i=0;i<s.rangeCount;i++)d.appendChild(s.getRangeAt(i).cloneContents());h=d.innerHTML;}"
     "var m=function(q){var e=document.querySelector(q);return e?(e.getAttribute('content')||e.getAttribute('datetime')||''):'';};"
-    "var f={token:'__TOKEN__',url:location.href,title:document.title,"
+    "var EP='__ENDPOINT__';"
+    "var p={token:'__TOKEN__',url:location.href,title:document.title,"
     "html:h?'':document.documentElement.outerHTML,selection:h,"
     "author:m('meta[name=\"author\"]'),published:m('meta[property=\"article:published_time\"]')||m('time[datetime]')};"
-    "var form=document.createElement('form');form.method='POST';form.action='__ENDPOINT__';"
-    "form.target='_blank';form.style.display='none';"
-    "for(var k in f){var ta=document.createElement('textarea');ta.name=k;ta.value=f[k]==null?'':f[k];form.appendChild(ta);}"
-    "document.body.appendChild(form);form.submit();"
-    "setTimeout(function(){form.remove();},1000);}catch(e){alert('Clip error: '+e.message);}})();"
+    "var t=function(x,o){var e=document.createElement('div');e.textContent=x;"
+    "e.style.cssText='position:fixed;z-index:2147483647;left:50%;top:24px;transform:translateX(-50%);background:'+(o?'#0a7f3f':'#b00020')+';color:#fff;font:600 14px system-ui;padding:10px 16px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3)';"
+    "document.body.appendChild(e);setTimeout(function(){e.remove();},2800);};"
+    "var ff=function(){var f=document.createElement('form');f.method='POST';f.action=EP;f.target='_blank';f.style.display='none';"
+    "for(var k in p){var a=document.createElement('textarea');a.name=k;a.value=p[k]==null?'':p[k];f.appendChild(a);}"
+    "document.body.appendChild(f);f.submit();setTimeout(function(){f.remove();},1000);};"
+    "t('Clipping…',1);"
+    "fetch(EP,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)})"
+    ".then(function(r){return r.json().catch(function(){return{ok:r.ok};});})"
+    ".then(function(j){t(j&&j.ok?((j.updated?'Updated ':'Clipped ')+(j.path||'')):'Error: '+((j&&j.detail)||'failed'),j&&j.ok);})"
+    ".catch(function(){ff();});"  # connect-src blocked fetch → fall back to a form POST (new tab)
+    "}catch(e){alert('Clip error: '+e.message);}})();"
 )
 
 

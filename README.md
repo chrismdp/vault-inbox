@@ -130,7 +130,7 @@ and drops the file into `~/vault/links/`, the vault's browser-extension drop
 zone.
 
 ```
-bookmarklet (form-POST) → /clip → readability + markdownify → markdown
+bookmarklet (fetch, form-POST fallback) → /clip → readability + markdownify → markdown
   → writes ~/vault/links/<slug>.md
   → collect.sh emits a [links] inbox item → /triage → /process-link
   → reads the LOCAL file (no refetch), wiki-merges, files into links/reference/
@@ -153,11 +153,15 @@ DOM (which is never CSP-blocked) and ships it.
 
 `/clip` accepts two shapes (all fields optional except `url`):
 
-- **form-encoded** (the bookmarklet): `token` is a field; returns an HTML
-  "Clipped ✓" page in the new tab. Submitting a `<form>` rides the `form-action`
-  CSP directive instead of `connect-src`, so it gets the bytes out of pages
-  where a `fetch` would be blocked.
-- **JSON** (extension / curl): bearer header; returns JSON.
+- **JSON** (the bookmarklet's primary transport, also extension / curl): `token`
+  in a bearer header or a body field; returns JSON. The bookmarklet sends this
+  via `fetch()` first — it works wherever `connect-src` allows the host (e.g. the
+  BBC allows `connect-src https:`), and a `fetch` is *catchable* so a CSP block
+  can be detected.
+- **form-encoded** (the bookmarklet's fallback): `token` is a field; returns an
+  HTML "Clipped ✓" page in a new tab. A `<form>` POST rides `form-action`
+  instead of `connect-src`, so it works on sites that block `fetch` but allow
+  form submission. Used only when the `fetch` is CSP-blocked.
 
 | field | meaning |
 |---|---|
@@ -191,9 +195,10 @@ code and rename it. On desktop, drag the link instead. Tapping the bookmark on
 any article clips it (or your current text selection) and opens a "Clipped ✓"
 tab. `clip-bookmarklet.src.js` is the readable source.
 
-> **The ceiling:** a site that locks down `default-src`/`form-action` too will
-> still block even the form-POST. Only a browser extension fully bypasses page
-> CSP — that's the desktop escape hatch. On mobile (no app), the form-POST is
+> **The ceiling:** the bookmarklet tries `fetch` then a form POST, so it only
+> fails on a site that locks down *both* `connect-src` and `form-action` (a
+> fully strict `default-src 'self'`). Only a browser extension fully bypasses
+> page CSP — that's the desktop escape hatch. On mobile (no app), the hybrid is
 > the most robust no-install option.
 
 ## License
