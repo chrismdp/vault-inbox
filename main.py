@@ -20,9 +20,9 @@ VAULT_AUDIO.mkdir(parents=True, exist_ok=True)
 TRANSCRIBE_SCRIPT = Path.home() / "vault" / "scripts" / "transcribe-voice-inbox.sh"
 TRANSCRIBE_LOG = Path("/tmp/transcribe-voice-inbox.log")
 
-TOKEN = os.environ.get("VOICE_BEARER_TOKEN")
+TOKEN = os.environ.get("VAULT_INBOX_BEARER_TOKEN")
 if not TOKEN:
-    raise RuntimeError("VOICE_BEARER_TOKEN not set")
+    raise RuntimeError("VAULT_INBOX_BEARER_TOKEN not set")
 
 CONTENT_TYPE_EXT = {
     "audio/mp4": ".m4a",

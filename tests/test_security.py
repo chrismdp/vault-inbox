@@ -14,7 +14,7 @@ TOKEN = "test-token-abc"
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("VOICE_BEARER_TOKEN", TOKEN)
+    monkeypatch.setenv("VAULT_INBOX_BEARER_TOKEN", TOKEN)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

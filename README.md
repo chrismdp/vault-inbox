@@ -49,11 +49,17 @@ cd vault-inbox
 uv sync
 ```
 
-Create `.env` (gitignored) with a bearer token:
+The service needs one secret, `VAULT_INBOX_BEARER_TOKEN`. Simplest is a
+gitignored `.env`:
 
 ```bash
-python3 -c 'import secrets; print("VOICE_BEARER_TOKEN=" + secrets.token_urlsafe(32))' > .env
+python3 -c 'import secrets; print("VAULT_INBOX_BEARER_TOKEN=" + secrets.token_urlsafe(32))' > .env
 ```
+
+Prefer not to keep the token on disk? Provide it however you like — it's just an
+env var. To resolve it from a secrets manager at launch, wrap the start command
+in e.g. 1Password's [`op run`](https://developer.1password.com/docs/cli/secret-references/)
+with `VAULT_INBOX_BEARER_TOKEN=op://<vault>/<item>/password`.
 
 Run it (binds localhost only — exposing it is the next step):
 
@@ -229,6 +235,12 @@ Optional, and not part of this repo. After a voice file lands, the service spawn
 transcribe, index, webhook, whatever you like. Clips don't fire a hook; they rely
 on your vault's own scan of `links/`. If the script is absent, voice just
 archives the recording.
+
+## Contributing
+
+Issues are welcome — bug reports, ideas, questions. **Pull requests aren't
+accepted** (a workflow auto-closes them); please open an issue instead and we'll
+talk it through there.
 
 ## License
 
