@@ -1,24 +1,43 @@
-# voice-inbox
+# inbox
 
-A tiny FastAPI endpoint that accepts audio POSTs from iOS Shortcuts (or anything) and drops the file onto disk. A bearer token gates the endpoint. Optionally fires a hook script after saving, which is where you wire up transcription.
+> A tiny, private HTTP inbox for your notes vault. Drop **voice memos** and
+> **web clips** in from your phone — your own pipeline takes it from there.
 
-## Why this exists
+*Started life as `voice-inbox`; it catches web articles too now.*
 
-iOS doesn't give apps programmatic access to iCloud Drive, and the Telegram Shortcuts integration won't attach audio. Recording a voice note, uploading it to your own server, and taking it from there via whatever pipeline you like turns out to be the simplest reliable path — and running it yourself means no third-party sees the audio.
+One small FastAPI service, bearer-token auth, bound to localhost. Two ways in,
+both landing in your Obsidian vault:
 
-This is the server side. On the phone: an iOS Shortcut bound to the Action Button that records audio and POSTs it here. The handoff script is a single `Get Contents of URL` action.
+- **Voice** — an iOS Shortcut (Action Button) POSTs a recording → saved → an
+  optional transcribe hook fires.
+- **Web clips** — a bookmarklet captures the *rendered* page → saved as clean
+  markdown into `~/vault/links/`, where your existing capture pipeline picks it up.
+
+It never reaches out: no third party sees your audio, and the clipper never
+fetches a URL itself — the browser sends what it actually sees, so paywalled and
+logged-in pages work too.
+
+## Why
+
+iOS doesn't give apps programmatic access to iCloud Drive, and you don't want a
+SaaS sitting in the middle of your private notes. Running one tiny endpoint you
+own — reachable over Tailscale or behind your own TLS — is the simplest reliable
+way to get things off your phone and into your vault.
 
 ## How it works
 
 ```
-iOS Shortcut (Action Button)
-  → POST https://your.host/voice  (Authorization: Bearer <token>)
-    → voice-inbox (FastAPI on 127.0.0.1:8790)
-      → writes ~/vault/audio/recordings/voice-YYYY-MM-DD_HH-MM-SS[-label].<ext>
-      → fires $HOME/vault/scripts/transcribe-voice-inbox.sh if it exists (fire-and-forget)
+VOICE  iOS Shortcut (Action Button)
+  → POST /voice  → ~/vault/audio/recordings/voice-<ts>[-label].<ext>
+                 → fires transcribe-voice-inbox.sh   (optional, fire-and-forget)
+
+CLIP   bookmarklet (fetch → form-POST fallback)
+  → POST /clip   → readability + markdownify → ~/vault/links/<slug>.md
+                 → your pipeline scans links/, processes it, files the source
 ```
 
-The hook script is optional. Without it you just get an archive of recordings on disk. With it you can wire up transcription, indexing, or anything else you like — the endpoint just saves the file and spawns the script with `<path> <label>`.
+The service just lands the file (and, for voice, spawns a hook). Everything
+downstream is your own scripts — none of your pipeline is baked in here.
 
 ## Install
 
@@ -30,27 +49,30 @@ cd voice-inbox
 uv sync
 ```
 
-Create `.env` (gitignored) with a bearer token — generate one with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`:
+Create `.env` (gitignored) with a bearer token:
 
-```
-VOICE_BEARER_TOKEN=<random-token>
+```bash
+python3 -c 'import secrets; print("VOICE_BEARER_TOKEN=" + secrets.token_urlsafe(32))' > .env
 ```
 
-Run it:
+Run it (binds localhost only — exposing it is the next step):
 
 ```bash
 uv run uvicorn main:app --host 127.0.0.1 --port 8790
 ```
 
-Put it behind nginx or Caddy with TLS — see `nginx-voice.snippet.conf` for a sample location block (`client_max_body_size 50M`, `proxy_request_buffering off`).
+Optional env:
 
-## systemd
+- `TROVE_CLIP_DEST` — clip destination subdir under `~/vault` (default `links`).
+  Keep it `links` if your downstream pipeline scans that directory.
 
-Sample user unit — copy to `~/.config/systemd/user/voice-inbox.service`:
+### Run it as a service (systemd)
+
+Copy to `~/.config/systemd/user/voice-inbox.service`:
 
 ```ini
 [Unit]
-Description=voice-inbox
+Description=inbox (voice + web clips)
 After=network.target
 
 [Service]
@@ -65,45 +87,137 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Then `systemctl --user enable --now voice-inbox` (and `loginctl enable-linger $USER` so it survives logout).
+`systemctl --user enable --now voice-inbox` (plus `loginctl enable-linger $USER`
+so it survives logout).
 
-## iOS Shortcut recipe
+## Exposing it
 
-1. **Record Audio** — Audio Quality: Normal, Start Recording: On Tap
-2. **Get Contents of URL**
-   - URL: `https://your.host/voice?label=note`
-   - Method: `POST`
-   - Headers: `Authorization: Bearer <your-token>`
-   - Request Body: **File** — pick the Recorded Audio variable
-3. Bind the shortcut to the Action Button: Settings → Action Button → Shortcut.
+The service binds `127.0.0.1`, never `0.0.0.0`. Pick one way to reach it from
+your phone.
 
-The optional `?label=note` query parameter is sanitised server-side and appended to the filename.
+### Option A — Tailscale (private; recommended)
 
-## Endpoint
+[Tailscale Serve](https://tailscale.com/kb/1312/serve) puts the service on your
+tailnet with automatic HTTPS, reachable only by *your* devices — no public
+internet exposure, no nginx, no certificate to manage.
 
-`POST /voice` — accepts either a raw audio body or `multipart/form-data` with a `file` field.
-
-Request headers:
-- `Authorization: Bearer <VOICE_BEARER_TOKEN>` (required)
-- `Content-Type` — used to pick the file extension
-
-Optional query param:
-- `?label=<string>` — sanitised (`[^A-Za-z0-9._-]` → `-`, truncated to 40 chars), appended to the saved filename
-
-Response:
-```json
-{ "ok": true, "path": "...", "bytes": 100140, "transcribe_pid": 12345 }
+```bash
+# Proxy the tailnet HTTPS name to the local service. The serve CLI syntax has
+# changed across versions — check `tailscale serve --help` for yours.
+tailscale serve --bg 8790
+tailscale serve status     # shows the https://<machine>.<tailnet>.ts.net URL
 ```
 
-`GET /health` — unauthenticated liveness check, returns `{"ok": true}`.
+Your phone just needs the Tailscale app connected. Because the setup page derives
+its endpoint from whatever host you load it on, opening
+`https://<machine>.<tailnet>.ts.net/clip/setup` builds a bookmarklet that targets
+your tailnet automatically — and clipping public sites keeps working as long as
+Tailscale is up on the phone.
+
+### Option B — nginx + public TLS
+
+Front it with nginx (or Caddy) terminating TLS on a public hostname.
+`nginx-voice.snippet.conf` has the location blocks for `/voice`,
+`/voice/health`, and `/clip` (the clip block raises `client_max_body_size` for
+full-page HTML). Get a cert with certbot, paste the blocks into your server
+block, then `nginx -t && systemctl reload nginx`.
+
+## Setting up the clients
+
+### Web clipper (bookmarklet)
+
+1. Open **`https://<your-host>/clip/setup`** in a browser.
+2. Paste your token — it stays in the browser; the page builds the bookmarklet locally.
+3. Tap **Copy bookmarklet**. (The code shows in a selectable box because iOS
+   won't let you copy a `javascript:` link's address.)
+4. **iOS Safari:** bookmark the setup page (Share → Add Bookmark), then
+   Bookmarks → Edit → tap the bookmark → select the whole address, delete it,
+   paste the copied code, and rename it "Clip to vault".
+   **Desktop:** drag the link to your bookmarks bar instead.
+
+Then tap the bookmark on any article. It captures the rendered page (or your
+current text selection); you get a green **"Clipped ✓"** toast (fetch path) or a
+"Clipped ✓" tab (form fallback), and the article lands in `~/vault/links/`.
+
+> Re-grab the bookmarklet from `/clip/setup` whenever you switch hosts
+> (public ↔ Tailscale) — the endpoint is baked into the bookmarklet.
+
+### Voice notes (iOS Shortcut)
+
+1. **Record Audio** — Quality: Normal, Start Recording: On Tap.
+2. **Get Contents of URL** — URL `https://<your-host>/voice?label=note`,
+   Method `POST`, Header `Authorization: Bearer <token>`, Request Body **File**
+   = the Recorded Audio variable.
+3. Bind it to the Action Button (Settings → Action Button → Shortcut).
+
+`?label=` is sanitised server-side and appended to the filename.
+
+## Endpoints
+
+### `POST /clip` (and `GET /clip/setup`)
+
+Saves a web page as markdown to `~/vault/<TROVE_CLIP_DEST>/<slug>.md`. Two
+shapes, all fields optional except `url`:
+
+- **JSON** (the bookmarklet's primary `fetch`, also extension / curl): token in a
+  bearer header or a `token` body field; returns JSON. Works wherever the page's
+  `connect-src` CSP allows your host.
+- **form-encoded** (the bookmarklet's fallback): `token` as a field; returns an
+  HTML "Clipped ✓" page in a new tab. A `<form>` POST rides the `form-action`
+  CSP directive, so it works where a `fetch` is blocked.
+
+| field | meaning |
+|---|---|
+| `url` | **required** — canonical article URL |
+| `html` | rendered page HTML — the server extracts the article from it |
+| `selection` | clip just this (html or text); marks `source: web clip (selection)` |
+| `title`, `author`, `published`, `tags` | metadata overrides |
+| `token` | the shared secret (or use the bearer header) |
+
+The server **never fetches the URL itself** — by design, and to avoid an SSRF
+surface. Send `html` or `selection`, or you get a 422. Same-URL re-clip
+overwrites its file; a different page with the same title-slug gets the next
+free `-N` suffix.
+
+```bash
+curl -X POST https://<your-host>/clip -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com/article","html":"<html>…</html>"}'
+```
+
+> **CSP ceiling:** the bookmarklet tries `fetch` then a form POST, so it only
+> fails on a site locking down *both* `connect-src` and `form-action` (a fully
+> strict `default-src 'self'`). A browser extension is the only thing that fully
+> bypasses page CSP — the desktop escape hatch.
+
+### `POST /voice`
+
+Raw audio body, or `multipart/form-data` with a `file` field. Header
+`Authorization: Bearer <token>`; `Content-Type` picks the extension. Optional
+`?label=`. Returns `{ok, path, bytes, transcribe_pid}`.
+
+### `GET /health`
+
+Unauthenticated liveness check → `{"ok": true}`.
 
 ## Security
 
-- Bearer-token auth with timing-safe comparison (`hmac.compare_digest`)
-- Filename extension restricted to a known audio-type allow-list; anything else falls back to `.bin`
-- Labels sanitised before being used in a filename or passed to the hook script
-- The hook script is invoked via `subprocess.Popen` with a list argv (no shell), and the companion `transcribe-voice-inbox.sh` uses a quoted heredoc and env-passed variables to block shell injection
-- Auth and sanitisation are covered by `tests/test_security.py`
+- Bearer-token auth on every route except `/health` and `/clip/setup`;
+  timing-safe (`hmac.compare_digest`, compared as bytes so a non-ASCII token
+  can't crash the check).
+- The clipper makes **no outbound requests** — no SSRF surface.
+- Reflected values in HTML responses are escaped; extracted HTML has
+  `<script>` / `<style>` / `<iframe>` / etc. stripped before conversion.
+- Voice: filename extension allow-listed; `?label=` sanitised; the hook runs via
+  `Popen` with a list argv (no shell).
+- Covered by `tests/test_security.py` and `tests/test_clip.py`.
+
+**Worth knowing — downstream tooling trusts what you save.** A clip's body is
+whatever was on the page. If your pipeline feeds saved files to an LLM agent with
+tools, treat that content as untrusted input (indirect prompt injection): it can
+contain instructions aimed at the agent. That's a property of the pipeline, not
+this endpoint — but the clipper makes it easy to ingest arbitrary pages, so fence
+accordingly.
 
 ## Tests
 
@@ -111,95 +225,17 @@ Response:
 uv run pytest
 ```
 
-Covers: missing/wrong/malformed bearer, empty body, path-traversal via label, shell-metacharacter labels, extension restrictions, and multipart filename spoofing.
+Covers auth (missing / wrong / malformed / non-ASCII token), the clip extraction
+and house-style output, slug collision handling, the form and JSON paths,
+path/label sanitisation, and multipart filename spoofing.
 
 ## Hook script
 
-The hook is not part of this repo — it's whatever you want to do after an audio file lands. I run a companion Bash script (`~/vault/scripts/transcribe-voice-inbox.sh`) that calls OpenAI's transcription API, drops a markdown transcript into my Obsidian vault, and appends an entry to my inbox file. Yours could do anything — forward to S3, push to a webhook, index into a search engine — or nothing at all.
-
-If `$HOME/vault/scripts/transcribe-voice-inbox.sh` doesn't exist, the endpoint just saves the file and returns.
-
-## Web clipping (`/clip`)
-
-The same endpoint also takes web clips — grab an article and get it into the
-vault as clean markdown. The hard part it solves: **content that only exists in
-your logged-in, JS-rendered browser** (paywalled, authenticated, SPA) which no
-server could fetch. So the browser captures the *rendered DOM* and ships the
-bytes; the server **never fetches** — it extracts markdown from what it's given
-and drops the file into `~/vault/links/`, the vault's browser-extension drop
-zone.
-
-```
-bookmarklet (fetch, form-POST fallback) → /clip → readability + markdownify → markdown
-  → writes ~/vault/links/<slug>.md
-  → collect.sh emits a [links] inbox item → /triage → /process-link
-  → reads the LOCAL file (no refetch), wiki-merges, files into links/reference/
-```
-
-Everything after the file write is the **existing pipeline**, untouched. The
-clip just produces the drop. Deliberately separate from `/voice`: no transcribe
-hook. Destination is configurable via `TROVE_CLIP_DEST`, but it must stay
-`links` for the auto-pipeline to pick it up (`collect.sh` only scans `links/`,
-and `/process-link` only treats `links/` as a no-refetch local source).
-
-It writes a file per clip with frontmatter `title / url / author / source /
-saved` and the article as the body — exactly what `/process-link` reads for a
-local drop. Slug filenames with `-2..-9` collision disambiguation; same-URL
-re-clip overwrites.
-
-Conversion is **server-side** on purpose: a bookmarklet can't load a converter
-in-page under a strict Content-Security-Policy, so it just reads the rendered
-DOM (which is never CSP-blocked) and ships it.
-
-`/clip` accepts two shapes (all fields optional except `url`):
-
-- **JSON** (the bookmarklet's primary transport, also extension / curl): `token`
-  in a bearer header or a body field; returns JSON. The bookmarklet sends this
-  via `fetch()` first — it works wherever `connect-src` allows the host (e.g. the
-  BBC allows `connect-src https:`), and a `fetch` is *catchable* so a CSP block
-  can be detected.
-- **form-encoded** (the bookmarklet's fallback): `token` is a field; returns an
-  HTML "Clipped ✓" page in a new tab. A `<form>` POST rides `form-action`
-  instead of `connect-src`, so it works on sites that block `fetch` but allow
-  form submission. Used only when the `fetch` is CSP-blocked.
-
-| field | meaning |
-|---|---|
-| `url` | **required** — the article URL |
-| `html` | rendered page HTML — server runs readability over it |
-| `selection` | clip just this (html or text); marks `source: web clip (selection)` |
-| `title`, `author`, `published`, `tags` | metadata overrides |
-| `token` | the shared secret, for the form path (or use the bearer header) |
-
-The server **never fetches the URL itself** — by design, and to avoid an SSRF
-surface. You must send the page content (`html` or `selection`); a request with
-only a `url` is rejected (422). This is deliberate: the browser sees paywalled /
-authenticated / JS-rendered pages that a server fetch never could. Re-clipping
-the same URL overwrites its file; a different page with the same title-slug gets
-the next free `-N` suffix.
-
-```bash
-# JSON path (extension / scripting)
-curl -X POST https://your.host/clip -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' -d '{"url":"https://example.com/article","html":"<html>…</html>"}'
-```
-
-### Bookmarklet setup
-
-Visit `https://your.host/clip/setup` and paste your token (it stays in the
-browser). The page shows the generated bookmarklet in a selectable box with a
-**Copy** button — because copying a `javascript:` link's href is near-impossible
-on iOS. To install on iOS Safari: tap **Copy bookmarklet**, bookmark that page,
-then Bookmarks → Edit → tap the bookmark → replace its address with the pasted
-code and rename it. On desktop, drag the link instead. Tapping the bookmark on
-any article clips it (or your current text selection) and opens a "Clipped ✓"
-tab. `clip-bookmarklet.src.js` is the readable source.
-
-> **The ceiling:** the bookmarklet tries `fetch` then a form POST, so it only
-> fails on a site that locks down *both* `connect-src` and `form-action` (a
-> fully strict `default-src 'self'`). Only a browser extension fully bypasses
-> page CSP — that's the desktop escape hatch. On mobile (no app), the hybrid is
-> the most robust no-install option.
+Optional, and not part of this repo. After a voice file lands, the service spawns
+`~/vault/scripts/transcribe-voice-inbox.sh <path> <label>` if it exists —
+transcribe, index, webhook, whatever you like. Clips don't fire a hook; they rely
+on your vault's own scan of `links/`. If the script is absent, voice just
+archives the recording.
 
 ## License
 
