@@ -238,9 +238,11 @@ archives the recording.
 
 ## Contributing
 
-Issues are welcome — bug reports, ideas, questions. **Pull requests aren't
-accepted** (a workflow auto-closes them); please open an issue instead and we'll
-talk it through there.
+**Issues welcome — pull requests aren't.** With so much AI-generated code around
+now, reviewing PRs costs more than it saves. What genuinely helps is a clear,
+thorough description of the problem or idea — what happens, when, and what you'd
+expect instead — as an issue; I don't need the code, I'll do that part. (A
+workflow auto-closes PRs and points back here.)
 
 ## License
 

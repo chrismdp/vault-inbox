@@ -20,7 +20,15 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: "Thanks for the interest! This project doesn't take pull requests — please [open an issue](../../issues) instead and we'll talk it through there. 🙏",
+              body: [
+                "Thanks for wanting to help! 🙏",
+                "",
+                "I'm not taking pull requests on this one. With so much AI-generated code around now, reviewing PRs costs more than it saves — I'd rather spend that time on the actual problem.",
+                "",
+                "What's genuinely useful is a **clear, thorough description of the problem or idea** as an [issue](../../issues): what happens, when it happens, and what you'd expect instead. I don't need the code — give me a good write-up of the problem and I'll do the code from there.",
+                "",
+                "Closing this — please [open an issue](../../issues) instead.",
+              ].join("\n"),
             });
             await github.rest.pulls.update({
               owner: context.repo.owner,
