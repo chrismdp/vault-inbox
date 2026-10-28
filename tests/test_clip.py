@@ -25,11 +25,12 @@ ARTICLE_HTML = """<html><head><title>Real Title</title>
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_INBOX_BEARER_TOKEN", TOKEN)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("VOICE_INBOX_AUDIO", str(tmp_path / "recordings"))
+    monkeypatch.setenv("CHRIS_INPUTS_QUEUE", str(tmp_path / "queue"))
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     for mod in ("main", "clip"):
         sys.modules.pop(mod, None)
     main = importlib.import_module("main")
-    monkeypatch.setattr(main, "TRANSCRIBE_SCRIPT", tmp_path / "nope.sh")
     return TestClient(main.app), tmp_path, monkeypatch
 
 

@@ -3,6 +3,7 @@
 import importlib
 import os
 import sys
+from unittest.mock import Mock
 from pathlib import Path
 
 import pytest
@@ -16,13 +17,16 @@ TOKEN = "test-token-abc"
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_INBOX_BEARER_TOKEN", TOKEN)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("VOICE_INBOX_AUDIO", str(tmp_path / ".local/state/voice-inbox/recordings"))
+    queue = tmp_path / ".local/state/chris-inputs/queue"
+    queue.mkdir(mode=0o700, parents=True)
+    monkeypatch.setenv("CHRIS_INPUTS_QUEUE", str(queue))
+    monkeypatch.setattr("subprocess.Popen", Mock(side_effect=AssertionError("Unexpected subprocess")))
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     for mod in [m for m in list(sys.modules) if m == "main"]:
         del sys.modules[mod]
     main = importlib.import_module("main")
-    # Neutralise subprocess to keep tests hermetic.
-    monkeypatch.setattr(main, "TRANSCRIBE_SCRIPT", tmp_path / "does-not-exist.sh")
     return TestClient(main.app), tmp_path
 
 

@@ -1,11 +1,12 @@
-"""Accept audio POSTs from iOS Shortcuts, save them privately, fire transcribe."""
+"""Save Action Button recordings and queue them as Chris's inputs for Today."""
 
 import hmac
+import json
 import os
 import re
-import subprocess
+import secrets
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -18,8 +19,7 @@ import clip as clip_lib
 VAULT_AUDIO = Path(os.environ.get("VOICE_INBOX_AUDIO", Path.home() / ".local" / "state" / "voice-inbox" / "recordings"))
 VAULT_AUDIO.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-TRANSCRIBE_SCRIPT = Path.home() / "vault" / "scripts" / "transcribe-voice-inbox.sh"
-TRANSCRIBE_LOG = Path("/tmp/transcribe-voice-inbox.log")
+INPUTS_QUEUE = Path(os.environ.get("CHRIS_INPUTS_QUEUE", Path.home() / ".local" / "state" / "chris-inputs" / "queue"))
 
 TOKEN = os.environ.get("VAULT_INBOX_BEARER_TOKEN")
 if not TOKEN:
@@ -91,6 +91,40 @@ def timestamped_path(ext: str, label: str) -> Path:
     return VAULT_AUDIO / ("-".join(parts) + ext)
 
 
+def atomic_write(path: Path, content: bytes | str) -> None:
+    """Match review-board/inputs.py: inherit ACLs and publish by atomic rename."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        if isinstance(content, bytes):
+            tmp.write_bytes(content)
+        else:
+            tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def queue_voice(recording: Path, label: str | None) -> str:
+    """Publish the clip first, then JSON as the inputs runner's ready signal."""
+    now = datetime.now(timezone.utc)
+    input_id = now.strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
+    extension = ".mp4" if recording.suffix == ".m4a" else recording.suffix
+    clip_name = f"{input_id}{extension}"
+    saved = {"id": input_id, "at": now.isoformat(timespec="seconds"), "kind": "update",
+             "ref": None, "text": None, "picks": [], "clip": clip_name,
+             "source": "action-button"}
+    if label is not None:
+        saved["label"] = label
+    clip_path = INPUTS_QUEUE / clip_name
+    try:
+        atomic_write(clip_path, recording.read_bytes())
+        atomic_write(INPUTS_QUEUE / f"{input_id}.json", json.dumps(saved, ensure_ascii=False))
+    except OSError:
+        clip_path.unlink(missing_ok=True)
+        raise
+    return input_id
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -127,7 +161,7 @@ async def clip(request: Request, authorization: str | None = Header(default=None
       - JSON (extension / curl): bearer header, returns JSON.
       - form-encoded (bookmarklet form-POST in a new tab): token as a field,
         returns an HTML confirmation page. Form submission dodges connect-src CSP.
-    Separate from /voice: no transcribe hook, so clips don't bloat the inbox.
+    Web clips use the vault's existing capture pipeline.
     """
     ctype = request.headers.get("content-type", "")
     is_json = "application/json" in ctype
@@ -178,7 +212,7 @@ async def voice(
     file: UploadFile | None = File(default=None),
 ):
     check_auth(authorization)
-    label = safe_label(request.query_params.get("label"))
+    label = request.query_params.get("label")
 
     if file is not None:
         ext = pick_ext(file.content_type, file.filename)
@@ -189,20 +223,18 @@ async def voice(
             raise HTTPException(status_code=400, detail="empty body")
         ext = pick_ext(request.headers.get("content-type"), None)
 
-    dest = timestamped_path(ext, label)
+    dest = timestamped_path(ext, safe_label(label))
     dest.write_bytes(data)
 
-    transcribe_pid = None
-    if TRANSCRIBE_SCRIPT.exists():
-        with TRANSCRIBE_LOG.open("a") as log:
-            proc = subprocess.Popen(
-                [str(TRANSCRIBE_SCRIPT), str(dest), label],
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
-            )
-            transcribe_pid = proc.pid
+    try:
+        input_id = queue_voice(dest, label)
+    except OSError:
+        return JSONResponse(
+            {"ok": False, "path": str(dest), "bytes": len(data),
+             "error": "Recording saved, but could not queue it for Today."},
+            status_code=503,
+        )
 
     return JSONResponse(
-        {"ok": True, "path": str(dest), "bytes": len(data), "transcribe_pid": transcribe_pid}
+        {"ok": True, "path": str(dest), "bytes": len(data), "input_id": input_id}
     )

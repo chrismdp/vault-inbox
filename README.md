@@ -7,19 +7,18 @@
 
 <p align="center">
   <img src="docs/overview.jpg" width="520"
-       alt="Two capture paths into one vault: press the phone Action Button to POST a voice note to /voice (auto-transcribed); tap a browser bookmarklet to POST a web clip to /clip (saved as clean markdown). Both land in your Obsidian vault.">
+       alt="The Action Button sends voice notes to Today. The browser bookmarklet saves web clips as markdown in the vault.">
 </p>
 
-One small FastAPI service, bearer-token auth, bound to localhost. Two ways in,
-both landing in your Obsidian vault:
+One small FastAPI service, bearer-token auth, bound to localhost. Two ways in:
 
-- **Voice** — an iOS Shortcut (Action Button) POSTs a recording → saved → an
-  optional transcribe hook fires.
+- **Voice** — an iOS Shortcut (Action Button) POSTs a recording → saved privately
+  → queued as one of Chris's inputs for Today.
 - **Web clips** — a bookmarklet captures the *rendered* page → saved as clean
   markdown into `~/vault/links/`, where your existing capture pipeline picks it up.
 
-It never reaches out: no third party sees your audio, and the clipper never
-fetches a URL itself — the browser sends what it actually sees, so paywalled and
+The service makes no outbound requests. The inputs runner handles transcription
+after queueing. The clipper uses the page sent by the browser, so paywalled and
 logged-in pages work too.
 
 ## Why
@@ -34,15 +33,16 @@ way to get things off your phone and into your vault.
 ```
 VOICE  iOS Shortcut (Action Button)
   → POST /voice  → ~/.local/state/voice-inbox/recordings/voice-<ts>[-label].<ext>  (VOICE_INBOX_AUDIO)
-                 → fires transcribe-voice-inbox.sh   (optional, fire-and-forget)
+                 → ~/.local/state/chris-inputs/queue/<id>.<ext> + <id>.json  (CHRIS_INPUTS_QUEUE)
+                 → inputs runner transcribes and processes → Bridge shows the result with Undo
 
 CLIP   bookmarklet (fetch → form-POST fallback)
   → POST /clip   → readability + markdownify → ~/vault/links/<slug>.md
                  → your pipeline scans links/, processes it, files the source
 ```
 
-The service just lands the file (and, for voice, spawns a hook). Everything
-downstream is your own scripts — none of your pipeline is baked in here.
+The service saves the recording before queueing it. It does not write a voice
+transcript to the vault or send a Telegram message.
 
 ## Install
 
@@ -74,6 +74,12 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8790
 
 Optional env:
 
+- `VOICE_INBOX_AUDIO` — recording directory (default
+  `~/.local/state/voice-inbox/recordings`). Created with mode `700`.
+- `CHRIS_INPUTS_QUEUE` — existing queue directory (default
+  `~/.local/state/chris-inputs/queue`). Provision it with mode `700` and the
+  board's ACLs, as described in review-board's `deploy.sh`. The service does not
+  create this directory or change its permissions.
 - `TROVE_CLIP_DEST` — clip destination subdir under `~/vault` (default `links`).
   Keep it `links` if your downstream pipeline scans that directory.
 
@@ -154,7 +160,8 @@ current text selection); you get a green **"Clipped ✓"** toast (fetch path) or
    = the Recorded Audio variable.
 3. Bind it to the Action Button (Settings → Action Button → Shortcut).
 
-`?label=` is sanitised server-side and appended to the filename.
+`?label=` is sanitised for the recording filename. The queue record retains the
+original label as metadata.
 
 ## Endpoints
 
@@ -198,7 +205,24 @@ curl -X POST https://<your-host>/clip -H "Authorization: Bearer $TOKEN" \
 
 Raw audio body, or `multipart/form-data` with a `file` field. Header
 `Authorization: Bearer <token>`; `Content-Type` picks the extension. Optional
-`?label=`. Returns `{ok, path, bytes, transcribe_pid}`.
+`?label=`. Success returns `{ok, path, bytes, input_id}`.
+
+The queue follows review-board's `inputs.py` and `/today/input` writer. Each ID
+is `YYYYmmddTHHMMSS-<8 hex>`, using UTC. The clip is copied first. Both files use
+a temporary file in the queue directory followed by an atomic rename. The JSON
+is published last, as the runner's ready signal. Files inherit the directory's
+ACLs and process umask, just as the board's files do.
+
+The JSON contains `id`, `at` (UTC ISO timestamp to seconds), `kind: "update"`,
+`ref: null`, `text: null`, `picks: []`, and `clip: "<id>.<ext>"`. It also contains
+`source: "action-button"` and `label` when supplied. M4A recordings use `.mp4` in
+the queue, matching Today. Other accepted upload extensions stay unchanged.
+
+If the queue is missing or a queue write fails, the recording stays saved. The
+response is HTTP `503` with `{ok: false, path, bytes, error}` and the message
+`Recording saved, but could not queue it for Today.` The response path locates
+the recording for recovery. A failed publication removes its temporary files
+and any queued clip where filesystem permissions allow cleanup.
 
 ### `GET /health`
 
@@ -212,9 +236,9 @@ Unauthenticated liveness check → `{"ok": true}`.
 - The clipper makes **no outbound requests** — no SSRF surface.
 - Reflected values in HTML responses are escaped; extracted HTML has
   `<script>` / `<style>` / `<iframe>` / etc. stripped before conversion.
-- Voice: filename extension allow-listed; `?label=` sanitised; the hook runs via
-  `Popen` with a list argv (no shell).
-- Covered by `tests/test_security.py` and `tests/test_clip.py`.
+- Voice: filename extension allow-listed, `?label=` sanitised for filenames,
+  no subprocess started.
+- Covered by `tests/test_security.py`, `tests/test_voice_inputs.py`, and `tests/test_clip.py`.
 
 **Worth knowing — downstream tooling trusts what you save.** A clip's body is
 whatever was on the page. If your pipeline feeds saved files to an LLM agent with
@@ -226,20 +250,16 @@ accordingly.
 ## Tests
 
 ```bash
-uv run pytest
+uv run pytest tests/test_voice_inputs.py tests/test_security.py tests/test_clip.py
 ```
 
 Covers auth (missing / wrong / malformed / non-ASCII token), the clip extraction
 and house-style output, slug collision handling, the form and JSON paths,
-path/label sanitisation, and multipart filename spoofing.
-
-## Hook script
-
-Optional, and not part of this repo. After a voice file lands, the service spawns
-`~/vault/scripts/transcribe-voice-inbox.sh <path> <label>` if it exists —
-transcribe, index, webhook, whatever you like. Clips don't fire a hook; they rely
-on your vault's own scan of `links/`. If the script is absent, voice just
-archives the recording.
+path/label sanitisation, multipart filename spoofing, the input queue contract,
+file modes, atomic publication order, and recording retention on queue failures.
+This explicit file list covers changes to `main.py` and these test fixtures.
+Use a temporary directory under the checkout with pytest's `--basetemp` option
+to keep test recordings and queues out of real state directories.
 
 ## Contributing
 
