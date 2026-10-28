@@ -1,4 +1,4 @@
-"""Accept audio POSTs from iOS Shortcuts, save to vault, fire transcribe."""
+"""Accept audio POSTs from iOS Shortcuts, save them privately, fire transcribe."""
 
 import hmac
 import os
@@ -14,8 +14,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 import clip as clip_lib
 
-VAULT_AUDIO = Path.home() / "vault" / "audio" / "recordings"
-VAULT_AUDIO.mkdir(parents=True, exist_ok=True)
+# Recordings stay out of the vault, which is in git and synced: a private folder of the server account.
+VAULT_AUDIO = Path(os.environ.get("VOICE_INBOX_AUDIO", Path.home() / ".local" / "state" / "voice-inbox" / "recordings"))
+VAULT_AUDIO.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 TRANSCRIBE_SCRIPT = Path.home() / "vault" / "scripts" / "transcribe-voice-inbox.sh"
 TRANSCRIBE_LOG = Path("/tmp/transcribe-voice-inbox.log")

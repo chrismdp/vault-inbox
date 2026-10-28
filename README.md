@@ -33,7 +33,7 @@ way to get things off your phone and into your vault.
 
 ```
 VOICE  iOS Shortcut (Action Button)
-  → POST /voice  → ~/vault/audio/recordings/voice-<ts>[-label].<ext>
+  → POST /voice  → ~/.local/state/voice-inbox/recordings/voice-<ts>[-label].<ext>  (VOICE_INBOX_AUDIO)
                  → fires transcribe-voice-inbox.sh   (optional, fire-and-forget)
 
 CLIP   bookmarklet (fetch → form-POST fallback)

@@ -63,7 +63,7 @@ def test_good_bearer_accepts_raw_body(client):
     saved = Path(r.json()["path"])
     assert saved.exists()
     assert saved.suffix == ".m4a"
-    assert saved.is_relative_to(tmp / "vault" / "audio" / "recordings")
+    assert saved.is_relative_to(tmp / ".local" / "state" / "voice-inbox" / "recordings")
 
 
 def test_empty_body_rejected(client):
@@ -84,7 +84,7 @@ def test_label_cannot_escape_directory(client):
     )
     assert r.status_code == 200
     saved = Path(r.json()["path"])
-    assert saved.is_relative_to(tmp / "vault" / "audio" / "recordings")
+    assert saved.is_relative_to(tmp / ".local" / "state" / "voice-inbox" / "recordings")
     assert "/" not in saved.name
     assert ".." not in saved.name.split("-")[-1].replace(".m4a", "")
 
